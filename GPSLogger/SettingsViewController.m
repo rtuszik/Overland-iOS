@@ -105,16 +105,14 @@
 
 - (void)authorizationStatusChanged {
     self.locationAuthorizationStatus.text = [GLManager sharedManager].authorizationStatusAsString;
-    if (@available(iOS 14.0, *)) {
-        if([GLManager sharedManager].locationManager.authorizationStatus != kCLAuthorizationStatusAuthorizedAlways) {
-            self.locationAuthorizationStatusWarning.hidden = false;
-            self.requestLocationPermissionsButton.hidden = false;
-            self.locationAuthorizationStatusSection.hidden = false;
-        } else {
-            self.locationAuthorizationStatusWarning.hidden = true;
-            self.requestLocationPermissionsButton.hidden = true;
-            self.locationAuthorizationStatusSection.hidden = true;
-        }
+    if([GLManager sharedManager].locationManager.authorizationStatus != kCLAuthorizationStatusAuthorizedAlways) {
+        self.locationAuthorizationStatusWarning.hidden = false;
+        self.requestLocationPermissionsButton.hidden = false;
+        self.locationAuthorizationStatusSection.hidden = false;
+    } else {
+        self.locationAuthorizationStatusWarning.hidden = true;
+        self.requestLocationPermissionsButton.hidden = true;
+        self.locationAuthorizationStatusSection.hidden = true;
     }
 }
 

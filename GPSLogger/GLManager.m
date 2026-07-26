@@ -689,12 +689,7 @@ const double MPH_to_METERSPERSECOND = 0.447;
 
 
 - (void)requestAuthorizationPermission {
-    bool isFirstRequest = false;
-    if (@available(iOS 14.0, *)) {
-        if(self.locationManager.authorizationStatus == kCLAuthorizationStatusNotDetermined) {
-            isFirstRequest = true;
-        }
-    }
+    bool isFirstRequest = self.locationManager.authorizationStatus == kCLAuthorizationStatusNotDetermined;
     if(isFirstRequest) {
         NSLog(@"Requesting WhenInUse Permission");
         [self.locationManager requestWhenInUseAuthorization];
@@ -1203,22 +1198,19 @@ const double MPH_to_METERSPERSECOND = 0.447;
 }
 
 - (NSString *)authorizationStatusAsString {
-    if (@available(iOS 14.0, *)) {
-        switch(self.locationManager.authorizationStatus) {
-            case kCLAuthorizationStatusNotDetermined:
-                return @"Not Determined";
-            case kCLAuthorizationStatusRestricted:
-                return @"Restricted";
-            case kCLAuthorizationStatusDenied:
-                return @"Denied";
-            case kCLAuthorizationStatusAuthorizedWhenInUse:
-                return @"When in Use";
-            case kCLAuthorizationStatusAuthorizedAlways:
-                return @"Always";
-        }
-    } else {
-        return @"Unknown";
+    switch(self.locationManager.authorizationStatus) {
+        case kCLAuthorizationStatusNotDetermined:
+            return @"Not Determined";
+        case kCLAuthorizationStatusRestricted:
+            return @"Restricted";
+        case kCLAuthorizationStatusDenied:
+            return @"Denied";
+        case kCLAuthorizationStatusAuthorizedWhenInUse:
+            return @"When in Use";
+        case kCLAuthorizationStatusAuthorizedAlways:
+            return @"Always";
     }
+    return @"Unknown";
 }
 
 - (BOOL)shouldConsiderHTTP200Success {
@@ -1468,11 +1460,7 @@ const double MPH_to_METERSPERSECOND = 0.447;
                 activityType = CLActivityTypeOtherNavigation;
                 break;
             case 5:
-                if (@available(iOS 12.0, *)) {
-                    activityType = CLActivityTypeAirborne;
-                } else {
-                    activityType = CLActivityTypeOther;
-                }
+                activityType = CLActivityTypeAirborne;
                 break;
             default:
                 activityType = CLActivityTypeOther;
@@ -1500,11 +1488,7 @@ const double MPH_to_METERSPERSECOND = 0.447;
             activityInt = 4;
             break;
         case CLActivityTypeAirborne:
-            if (@available(iOS 12.0, *)) {
-                activityInt = 5;
-            } else {
-                activityInt = 1;
-            }
+            activityInt = 5;
             break;
     }
     [[NSUserDefaults standardUserDefaults] setInteger:activityInt forKey:GLActivityTypeDefaultsName];
@@ -1530,11 +1514,7 @@ const double MPH_to_METERSPERSECOND = 0.447;
                 activityType = CLActivityTypeOtherNavigation;
                 break;
             case 5:
-                if (@available(iOS 12.0, *)) {
-                    activityType = CLActivityTypeAirborne;
-                } else {
-                    activityType = CLActivityTypeOther;
-                }
+                activityType = CLActivityTypeAirborne;
                 break;
             default:
                 activityType = CLActivityTypeOther;
@@ -1562,11 +1542,7 @@ const double MPH_to_METERSPERSECOND = 0.447;
             activityInt = 4;
             break;
         case CLActivityTypeAirborne:
-            if (@available(iOS 12.0, *)) {
-                activityInt = 5;
-            } else {
-                activityInt = 1;
-            }
+            activityInt = 5;
             break;
     }
     [[NSUserDefaults standardUserDefaults] setInteger:activityInt forKey:GLTripActivityTypeDefaultsName];

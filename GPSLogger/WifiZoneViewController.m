@@ -215,7 +215,7 @@ static NSString *WifiZoneMinTimeShortLabel(int seconds) {
 
     self.title = (_index == NSNotFound) ? @"New Wifi Zone" : @"Edit Wifi Zone";
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Save"
-                                                                             style:UIBarButtonItemStyleDone
+                                                                             style:UIBarButtonItemStyleProminent
                                                                             target:self
                                                                             action:@selector(saveWasTapped)];
 

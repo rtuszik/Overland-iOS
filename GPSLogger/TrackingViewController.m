@@ -31,9 +31,7 @@ BOOL mapWasDragged = NO;
     activityStart.title = @"Start Overland Tracking";
     activityStart.userInfo = @{@"tracking" : @"on"};
     [activityStart setEligibleForSearch:true];
-    if (@available(iOS 12.0, *)) {
-        [activityStart setEligibleForPrediction:true];
-    }
+    [activityStart setEligibleForPrediction:true];
     self.view.userActivity = activityStart;
     [activityStart becomeCurrent];
 }

@@ -11,6 +11,11 @@
 #import <SafariServices/SafariServices.h>
 #import "GLManager.h"
 
+// StoreKit 1 is deprecated as of iOS 18. Product IDs here are still upstream's
+// app.p3k.overland.*, so this cannot resolve under this fork's bundle id anyway.
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#pragma clang diagnostic ignored "-Wdeprecated-implementations"
+
 @interface TipJarViewController () <SKProductsRequestDelegate, SKPaymentTransactionObserver, UITableViewDataSource, UITableViewDelegate>
 
 @end
