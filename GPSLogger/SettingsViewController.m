@@ -9,6 +9,7 @@
 
 #import "SettingsViewController.h"
 #import "GLManager.h"
+#import "WifiZoneViewController.h"
 
 #import  <Intents/Intents.h>
 #import <SafariServices/SafariServices.h>
@@ -453,6 +454,14 @@
     } else {
         [GLManager sharedManager].notificationsEnabled = NO;
     }
+}
+
+- (IBAction)configureWifiZonesWasPressed:(UIButton *)sender {
+    // Nav controller built here because the storyboard has none and the list
+    // needs to push its editor.
+    WifiZoneListViewController *zones = [[WifiZoneListViewController alloc] init];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:zones];
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 - (IBAction)privacyPolicyWasPressed:(UIButton *)sender {

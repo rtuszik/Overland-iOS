@@ -41,8 +41,10 @@ static NSString *const GLBackgroundIndicatorDefaultsName = @"GLBackgroundIndicat
 static NSString *const GLLoggingModeDefaultsName = @"GLLoggingModeDefaults";
 static NSString *const GLTripModeStatsDefaultsName = @"GLTripModeStats";
 static NSString *const GLVisitTrackingEnabledDefaultsName = @"GLVisitTrackingEnabledDefaults";
+static NSString *const GLWifiZonesDefaultsName = @"GLWifiZonesDefaults";
 
 static NSString *const GLPurgeQueueOnNextLaunchDefaultsName = @"GLPurgeQueueOnNextLaunch";
+static NSString *const GLWifiZonesMigratedDefaultsName = @"GLWifiZonesMigratedDefaults";
 static NSString *const GLLastScheduledNotificationDateDefaultsName = @"GLLastScheduledNotificationDateDefaults";
 
 /* During-Trip Defaults */
@@ -102,6 +104,30 @@ typedef enum {
 } GLLocationProperty;
 
 typedef void (^CaseBlock)(void);
+
+// SSID to fixed coordinates. While on that network, location updates are
+// replaced with these, and minTimeBetweenPoints can override the global one.
+@interface GLWifiZone : NSObject
+
+@property (strong, nonatomic) NSString *ssid;
+@property (nonatomic) CLLocationDegrees latitude;
+@property (nonatomic) CLLocationDegrees longitude;
+@property (nonatomic) int minTimeBetweenPoints; // seconds, 0 inherits the global setting
+
+- (instancetype)initWithSSID:(NSString *)ssid
+                    latitude:(CLLocationDegrees)latitude
+                   longitude:(CLLocationDegrees)longitude
+        minTimeBetweenPoints:(int)minTimeBetweenPoints;
+
++ (GLWifiZone *)zoneFromDictionary:(NSDictionary *)dict; // nil if the entry is unusable
+- (NSDictionary *)dictionaryRepresentation;
+- (CLLocation *)syntheticLocation;
+- (BOOL)isValid;
+
+// Single source of truth for SSID comparison: live matching and dup rejection.
++ (BOOL)ssid:(NSString *)a matchesSSID:(NSString *)b;
+
+@end
 
 @interface GLManager : NSObject <CLLocationManagerDelegate, UNUserNotificationCenterDelegate>
 
@@ -178,10 +204,10 @@ typedef void (^CaseBlock)(void);
 - (void)refreshCurrentWifiSSID;
 - (void)refreshCurrentWifiSSIDWithCompletion:(void (^)(NSString *ssid))completion;
 
-@property (strong, nonatomic, readonly) NSString *wifiZoneName;
-@property (strong, nonatomic, readonly) NSString *wifiZoneLatitude;
-@property (strong, nonatomic, readonly) NSString *wifiZoneLongitude;
-- (void)saveNewWifiZone:(NSString *)name withLatitude:(NSString *)latitude andLongitude:(NSString *)longitude;
+@property (strong, nonatomic, readonly) NSArray<GLWifiZone *> *wifiZones;
+- (GLWifiZone *)wifiZoneMatchingSSID:(NSString *)ssid;
+- (void)saveWifiZone:(GLWifiZone *)zone atIndex:(NSUInteger)index; // NSNotFound appends
+- (void)deleteWifiZoneAtIndex:(NSUInteger)index;
 
 #pragma mark - Trips
 

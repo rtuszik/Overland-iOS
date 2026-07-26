@@ -8,18 +8,16 @@
 
 #import <UIKit/UIKit.h>
 
-NS_ASSUME_NONNULL_BEGIN
+@class GLWifiZone;
 
-@interface WifiZoneViewController : UIViewController
-
-@property (strong, nonatomic) IBOutlet UITextField *wifiNameField;
-@property (strong, nonatomic) IBOutlet UITextField *latitudeField;
-@property (strong, nonatomic) IBOutlet UITextField *longitudeField;
-@property (strong, nonatomic) IBOutlet UIButton *resetButton;
-
-- (IBAction)saveButtonWasTapped:(UIButton *)sender;
-- (IBAction)resetButtonWasTapped:(UIButton *)sender;
-
+// Presented modally in a code-built UINavigationController, since the storyboard
+// has none. Both screens here are code, not storyboard scenes.
+@interface WifiZoneListViewController : UITableViewController
 @end
 
-NS_ASSUME_NONNULL_END
+// Add or edit a single zone. Pass nil and NSNotFound to create a new one.
+@interface WifiZoneEditorViewController : UITableViewController
+
+- (instancetype)initWithZone:(GLWifiZone *)zone atIndex:(NSUInteger)index;
+
+@end

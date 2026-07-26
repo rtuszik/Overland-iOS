@@ -36,6 +36,92 @@
 
 @property (strong, nonatomic) NSDate *lastScheduledNotificationDate;
 
+- (void)writeWifiZones:(NSArray<GLWifiZone *> *)zones;
+- (void)migrateLegacyWifiZoneIfNeeded;
+- (void)logWifiZoneTransitionForSSID:(NSString *)ssid zone:(GLWifiZone *)zone effectiveMinSeconds:(int)minSeconds;
+
+@end
+
+@implementation GLWifiZone
+
+- (instancetype)initWithSSID:(NSString *)ssid
+                    latitude:(CLLocationDegrees)latitude
+                   longitude:(CLLocationDegrees)longitude
+        minTimeBetweenPoints:(int)minTimeBetweenPoints {
+    self = [super init];
+    if(self) {
+        _ssid = ssid;
+        _latitude = latitude;
+        _longitude = longitude;
+        _minTimeBetweenPoints = minTimeBetweenPoints;
+    }
+    return self;
+}
+
+// Type-checked so one corrupt entry can't take out the whole list.
++ (GLWifiZone *)zoneFromDictionary:(NSDictionary *)dict {
+    if(![dict isKindOfClass:[NSDictionary class]]) {
+        return nil;
+    }
+
+    id ssid = [dict objectForKey:@"ssid"];
+    id latitude = [dict objectForKey:@"latitude"];
+    id longitude = [dict objectForKey:@"longitude"];
+    id minTime = [dict objectForKey:@"min_time"];
+
+    if(![ssid isKindOfClass:[NSString class]]
+       || ![latitude isKindOfClass:[NSNumber class]]
+       || ![longitude isKindOfClass:[NSNumber class]]) {
+        return nil;
+    }
+
+    GLWifiZone *zone = [[GLWifiZone alloc] initWithSSID:ssid
+                                              latitude:[latitude doubleValue]
+                                             longitude:[longitude doubleValue]
+                                  minTimeBetweenPoints:([minTime isKindOfClass:[NSNumber class]] ? [minTime intValue] : 0)];
+    return [zone isValid] ? zone : nil;
+}
+
+- (NSDictionary *)dictionaryRepresentation {
+    return @{
+        @"ssid": (self.ssid ?: @""),
+        @"latitude": [NSNumber numberWithDouble:self.latitude],
+        @"longitude": [NSNumber numberWithDouble:self.longitude],
+        @"min_time": [NSNumber numberWithInt:self.minTimeBetweenPoints],
+    };
+}
+
+// Values match the old single-zone code, so the wire format is unchanged.
+// accuracy 1 is also what gets zone points past the trip-distance filter.
+- (CLLocation *)syntheticLocation {
+    CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(self.latitude, self.longitude);
+    return [[CLLocation alloc] initWithCoordinate:coord
+                                         altitude:-1
+                               horizontalAccuracy:1
+                                 verticalAccuracy:0
+                                           course:0
+                                            speed:0
+                                        timestamp:NSDate.date];
+}
+
+- (BOOL)isValid {
+    if(self.ssid.length == 0) {
+        return NO;
+    }
+    return CLLocationCoordinate2DIsValid(CLLocationCoordinate2DMake(self.latitude, self.longitude));
+}
+
++ (BOOL)ssid:(NSString *)a matchesSSID:(NSString *)b {
+    if(![a isKindOfClass:[NSString class]] || ![b isKindOfClass:[NSString class]]) {
+        return NO;
+    }
+    if(a.length == 0 || b.length == 0) {
+        return NO;
+    }
+    // Case-insensitive: a mismatch would fail silently, with no error surface.
+    return [a caseInsensitiveCompare:b] == NSOrderedSame;
+}
+
 @end
 
 @implementation GLManager
@@ -52,6 +138,7 @@ NSString *_deviceId;
 CLLocationDistance _currentTripDistanceCached;
 AFHTTPSessionManager *_httpClient;
 NSString *_currentWifiSSID;
+NSString *_lastLoggedWifiState;
 BOOL _wifiSSIDFetchInFlight;
 NSDate *_lastWifiSSIDFetch;
 
@@ -77,6 +164,11 @@ const double MPH_to_METERSPERSECOND = 0.447;
             [_instance setUpTripDB];
             
             [_instance setupHTTPClient];
+            // Before restoreTrackingState starts location updates, so no
+            // callback sees a half-migrated state.
+            [_instance migrateLegacyWifiZoneIfNeeded];
+            NSLog(@"[WifiZone] loaded %lu zone(s)", (unsigned long)[_instance wifiZones].count);
+            [_instance refreshCurrentWifiSSID];
             [_instance restoreTrackingState];
             [_instance initializeNotifications];
             
@@ -658,7 +750,7 @@ const double MPH_to_METERSPERSECOND = 0.447;
 - (void)enableTracking {
     self.trackingEnabled = YES;
 
-    // Covers start, trip start and geofence resume, so the zone engages on the
+    // Covers start, trip start and geofence resume, so a zone engages on the
     // first update rather than the second.
     [self refreshCurrentWifiSSID];
 
@@ -1616,15 +1708,13 @@ const double MPH_to_METERSPERSECOND = 0.447;
         return;
     }
         
-    // Reading the SSID is async, so this batch uses the last known value.
+    // On a zone's network, swap the whole batch for its fixed coordinates.
+    // Refresh is async, so this batch uses the last known SSID.
     [self refreshCurrentWifiSSID];
-
-    // If a wifi override is configured, replace the input location list with the location in the wifi mapping
-    if([GLManager currentWifiHotSpotName]) {
-        CLLocation *wifiLocation = [self currentLocationFromWifiName:[GLManager currentWifiHotSpotName]];
-        if(wifiLocation) {
-            locations = @[wifiLocation];
-        }
+    NSString *currentSSID = [GLManager currentWifiHotSpotName];
+    GLWifiZone *activeZone = [self wifiZoneMatchingSSID:currentSSID];
+    if(activeZone) {
+        locations = @[[activeZone syntheticLocation]];
     }
     
     // NSLog(@"Received %d locations", (int)locations.count);
@@ -1658,26 +1748,36 @@ const double MPH_to_METERSPERSECOND = 0.447;
     }
     
     BOOL didAddData = NO;
-    
+
+    // Once per batch, not per point: both getters go through defaultsKeyExists:,
+    // which rebuilds dictionaryRepresentation and allKeys every call.
+    CLLocationDistance minDistance = self.discardPointsWithinDistanceCurrentValue;
+    int minSeconds = self.discardPointsWithinSecondsCurrentValue;
+    if(activeZone && !self.tripInProgress && activeZone.minTimeBetweenPoints > 0) {
+        // Trip settings always win, hence the tripInProgress guard.
+        minSeconds = activeZone.minTimeBetweenPoints;
+    }
+    [self logWifiZoneTransitionForSSID:currentSSID zone:activeZone effectiveMinSeconds:minSeconds];
+
     for(int i=startIndex; i<locations.count; i++) {
         CLLocation *loc = locations[i];
-        
+
         // If Discard is enabled, check if this point is too close to the previous
-        if(self.discardPointsWithinDistanceCurrentValue > 0) {
+        if(minDistance > 0) {
             CLLocationDistance distanceBetweenPoints = [lastLocationSeen distanceFromLocation:loc];
-            if(distanceBetweenPoints < self.discardPointsWithinDistanceCurrentValue) {
+            if(distanceBetweenPoints < minDistance) {
                 // NSLog(@"Discarding location because this point is too close to the previous: %f", distanceBetweenPoints);
                 continue;
             }
         }
 
-        if(self.discardPointsWithinSecondsCurrentValue > 1) {
+        if(minSeconds > 1) {
             int timeInterval = (int)[loc.timestamp timeIntervalSinceDate:lastLocationSeen.timestamp];
-            if(timeInterval < self.discardPointsWithinSecondsCurrentValue) {
+            if(timeInterval < minSeconds) {
                 continue;
             }
         }
-        
+
         NSString *timestamp = [GLManager iso8601DateStringFromDate:loc.timestamp];
         NSDictionary *update;
         if(self.loggingModeCurrentValue == kGLLoggingModeOwntracks) {
@@ -1996,47 +2096,138 @@ const double MPH_to_METERSPERSECOND = 0.447;
  also be used to pause location updates when the user gets home.
 */
 
-- (CLLocation *)currentLocationFromWifiName:(NSString *)wifi {
-    if(wifi == nil) {
+// Once per location batch, so it walks the raw dictionaries and only allocates
+// a GLWifiZone on a hit.
+- (GLWifiZone *)wifiZoneMatchingSSID:(NSString *)ssid {
+    // currentWifiHotSpotName returns @"" off wifi, so this is what stops a
+    // blank-SSID zone matching everywhere.
+    if(ssid.length == 0) {
         return nil;
     }
-    
-    if(self.wifiZoneName) {
-    
-        if([self.wifiZoneName isEqualToString:wifi]) {
-            double latitude = [self.wifiZoneLatitude floatValue];
-            double longitude = [self.wifiZoneLongitude floatValue];
-            CLLocationCoordinate2D coord = CLLocationCoordinate2DMake(latitude, longitude);
-            NSDate *timestamp = NSDate.date;
-            
-            CLLocation *loc = [[CLLocation alloc] initWithCoordinate:coord
-                                                            altitude:-1
-                                                  horizontalAccuracy:1
-                                                    verticalAccuracy:0
-                                                              course:0
-                                                               speed:0
-                                                           timestamp:timestamp];
-            return loc;
+
+    NSArray *stored = [[NSUserDefaults standardUserDefaults] arrayForKey:GLWifiZonesDefaultsName];
+    for(id entry in stored) {
+        if(![entry isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        if([GLWifiZone ssid:[entry objectForKey:@"ssid"] matchesSSID:ssid]) {
+            return [GLWifiZone zoneFromDictionary:entry];
         }
     }
-    
+
     return nil;
 }
 
-- (void)saveNewWifiZone:(NSString *)name withLatitude:(NSString *)latitude andLongitude:(NSString *)longitude {
-    
-    [[NSUserDefaults standardUserDefaults] setObject:name forKey:@"WifiZoneName"];
-    [[NSUserDefaults standardUserDefaults] setObject:latitude forKey:@"WifiZoneLatitude"];
-    [[NSUserDefaults standardUserDefaults] setObject:longitude forKey:@"WifiZoneLongitude"];
+// Transitions only. Standard tracking would otherwise flood the console.
+- (void)logWifiZoneTransitionForSSID:(NSString *)ssid zone:(GLWifiZone *)zone effectiveMinSeconds:(int)minSeconds {
+    // Keyed on the whole outcome, not just the SSID, so editing a zone re-logs
+    // without changing network.
+    NSString *current = (ssid ?: @"");
+    NSString *state = [NSString stringWithFormat:@"%@|%@|%d|%d",
+                       current, (zone.ssid ?: @"-"), minSeconds, self.tripInProgress];
+    if([state isEqualToString:_lastLoggedWifiState]) {
+        return;
+    }
+    _lastLoggedWifiState = state;
+
+    if(zone) {
+        NSLog(@"[WifiZone] SSID '%@' matched zone '%@' (zone minTime %ds, trip=%d, effective minSeconds=%d)",
+              current, zone.ssid, zone.minTimeBetweenPoints, self.tripInProgress, minSeconds);
+    } else {
+        NSLog(@"[WifiZone] SSID '%@' matched no zone (effective minSeconds=%d)", current, minSeconds);
+    }
 }
-- (NSString *)wifiZoneName {
-    return [[NSUserDefaults standardUserDefaults] objectForKey:@"WifiZoneName"];
+
+// UI only. The hot path uses wifiZoneMatchingSSID:.
+- (NSArray<GLWifiZone *> *)wifiZones {
+    NSArray *stored = [[NSUserDefaults standardUserDefaults] arrayForKey:GLWifiZonesDefaultsName];
+    NSMutableArray *zones = [NSMutableArray array];
+    for(id entry in stored) {
+        if(![entry isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        GLWifiZone *zone = [GLWifiZone zoneFromDictionary:entry];
+        if(zone) {
+            [zones addObject:zone];
+        }
+    }
+    return zones;
 }
-- (NSString *)wifiZoneLatitude {
-    return [[NSUserDefaults standardUserDefaults] objectForKey:@"WifiZoneLatitude"];
+
+- (void)saveWifiZone:(GLWifiZone *)zone atIndex:(NSUInteger)index {
+    if(![zone isValid]) {
+        NSLog(@"[WifiZone] refusing to save an invalid zone");
+        return;
+    }
+
+    NSMutableArray *zones = [[self wifiZones] mutableCopy];
+    if(index == NSNotFound || index >= zones.count) {
+        [zones addObject:zone];
+        index = zones.count - 1;
+    } else {
+        [zones replaceObjectAtIndex:index withObject:zone];
+    }
+
+    [self writeWifiZones:zones];
+    NSLog(@"[WifiZone] saved '%@' (%.5f,%.5f) minTime=%ds at index %lu; %lu total",
+          zone.ssid, zone.latitude, zone.longitude, zone.minTimeBetweenPoints,
+          (unsigned long)index, (unsigned long)zones.count);
 }
-- (NSString *)wifiZoneLongitude {
-    return [[NSUserDefaults standardUserDefaults] objectForKey:@"WifiZoneLongitude"];
+
+- (void)deleteWifiZoneAtIndex:(NSUInteger)index {
+    NSMutableArray *zones = [[self wifiZones] mutableCopy];
+    if(index >= zones.count) {
+        return;
+    }
+
+    NSString *ssid = ((GLWifiZone *)zones[index]).ssid;
+    [zones removeObjectAtIndex:index];
+    [self writeWifiZones:zones];
+    NSLog(@"[WifiZone] deleted '%@'; %lu remaining", ssid, (unsigned long)zones.count);
+}
+
+- (void)writeWifiZones:(NSArray<GLWifiZone *> *)zones {
+    NSMutableArray *dicts = [NSMutableArray arrayWithCapacity:zones.count];
+    for(GLWifiZone *zone in zones) {
+        [dicts addObject:[zone dictionaryRepresentation]];
+    }
+    [[NSUserDefaults standardUserDefaults] setObject:dicts forKey:GLWifiZonesDefaultsName];
+    [[NSNotificationCenter defaultCenter] postNotificationName:GLSettingsChangedNotification object:self];
+}
+
+// Folds the pre-1.4 single zone (three raw string keys) into the array. Flag
+// guard rather than "legacy keys gone", so the log fires exactly once.
+- (void)migrateLegacyWifiZoneIfNeeded {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if([defaults boolForKey:GLWifiZonesMigratedDefaultsName]) {
+        return;
+    }
+
+    NSString *name = [defaults stringForKey:@"WifiZoneName"];
+    NSString *latitude = [defaults stringForKey:@"WifiZoneLatitude"];
+    NSString *longitude = [defaults stringForKey:@"WifiZoneLongitude"];
+    NSString *ssid = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+    if(ssid.length > 0 && latitude.length > 0 && longitude.length > 0
+       && [defaults objectForKey:GLWifiZonesDefaultsName] == nil) {
+        GLWifiZone *zone = [[GLWifiZone alloc] initWithSSID:ssid
+                                                  latitude:[latitude doubleValue]
+                                                 longitude:[longitude doubleValue]
+                                      minTimeBetweenPoints:0];
+        if([zone isValid]) {
+            [defaults setObject:@[[zone dictionaryRepresentation]] forKey:GLWifiZonesDefaultsName];
+            NSLog(@"[WifiZone] migrated legacy zone '%@' (%.5f,%.5f)", zone.ssid, zone.latitude, zone.longitude);
+        } else {
+            NSLog(@"[WifiZone] legacy zone '%@' had invalid coordinates (%@, %@), dropped", name, latitude, longitude);
+        }
+    } else {
+        NSLog(@"[WifiZone] no legacy zone to migrate");
+    }
+
+    [defaults removeObjectForKey:@"WifiZoneName"];
+    [defaults removeObjectForKey:@"WifiZoneLatitude"];
+    [defaults removeObjectForKey:@"WifiZoneLongitude"];
+    [defaults setBool:YES forKey:GLWifiZonesMigratedDefaultsName];
 }
 
 
