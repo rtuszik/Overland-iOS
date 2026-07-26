@@ -1,0 +1,42 @@
+[tasks.release]
+description = "Bump version, commit, tag and push to main"
+usage = 'arg "<version>" help="Marketing version, e.g. 1.5"'
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+version="$usage_version"
+tag="v$version"
+build=$(date +%Y%m%d%H%M)
+
+branch=$(git rev-parse --abbrev-ref HEAD)
+if [ "$branch" != "main" ]; then
+  echo "on $branch, not main" >&2
+  exit 1
+fi
+
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "working tree is dirty, commit or stash first" >&2
+  exit 1
+fi
+
+if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+  echo "$tag already exists" >&2
+  exit 1
+fi
+
+# Three independent places. The release workflow rejects a tag that disagrees
+# with CFBundleShortVersionString, so all three move together.
+sed -i '' "s/MARKETING_VERSION = .*;/MARKETING_VERSION = $version;/" Overland.xcodeproj/project.pbxproj
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" GPSLogger/Info.plist
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build" GPSLogger/Info.plist
+
+git add Overland.xcodeproj/project.pbxproj GPSLogger/Info.plist
+git commit -m "bump version to $version"
+git tag -a "$tag" -m "$version"
+
+git push origin main
+git push origin "$tag"
+
+echo "pushed $tag, the release workflow will build and attach the ipa"
+'''

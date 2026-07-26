@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  ipa:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # MARKETING_VERSION and CFBundleShortVersionString are set independently and
+      # drift easily, so refuse to ship a tag that disagrees with the bundle.
+      - name: Check tag against bundle version
+        run: |
+          version=$(plutil -extract CFBundleShortVersionString raw -o - GPSLogger/Info.plist)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match CFBundleShortVersionString $version"
+            exit 1
+          fi
+
+      # Generates Overland.xcworkspace, which is gitignored, and re-applies the
+      # AFNetworking header patch from the Podfile.
+      - name: pod install
+        run: pod install
+
+      - name: Build
+        run: |
+          xcodebuild \
+            -workspace Overland.xcworkspace \
+            -scheme Overland \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build
+
+      - name: Package ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Overland.app Payload/
+          zip -qry "Overland-$GITHUB_REF_NAME.ipa" Payload
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes 'Unsigned build. Re-sign before installing, e.g. with Sideloadly or AltStore.
+
+          Re-signing with a free Apple ID drops the Access WiFi Information entitlement, and without it the app cannot read the current SSID, so wifi zones will not match. Sign with a paid team to keep that working.
+          ' \
+            "Overland-$GITHUB_REF_NAME.ipa"
