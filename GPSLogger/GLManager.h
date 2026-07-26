@@ -174,6 +174,10 @@ typedef void (^CaseBlock)(void);
 
 - (void)requestNotificationPermission;
 
+// currentWifiHotSpotName is a cache. These update it, completion on main queue.
+- (void)refreshCurrentWifiSSID;
+- (void)refreshCurrentWifiSSIDWithCompletion:(void (^)(NSString *ssid))completion;
+
 @property (strong, nonatomic, readonly) NSString *wifiZoneName;
 @property (strong, nonatomic, readonly) NSString *wifiZoneLatitude;
 @property (strong, nonatomic, readonly) NSString *wifiZoneLongitude;

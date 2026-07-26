@@ -11,7 +11,7 @@
 #import "AFHTTPSessionManager.h"
 #import "LOLDatabase.h"
 #import "FMDatabase.h"
-#import "SystemConfiguration/CaptiveNetwork.h"
+@import NetworkExtension;
 @import UserNotifications;
 
 @interface GLManager()
@@ -51,6 +51,9 @@ long _currentPointsInQueue;
 NSString *_deviceId;
 CLLocationDistance _currentTripDistanceCached;
 AFHTTPSessionManager *_httpClient;
+NSString *_currentWifiSSID;
+BOOL _wifiSSIDFetchInFlight;
+NSDate *_lastWifiSSIDFetch;
 
 const double FEET_TO_METERS = 0.304;
 const double MPH_to_METERSPERSECOND = 0.447;
@@ -654,6 +657,10 @@ const double MPH_to_METERSPERSECOND = 0.447;
 
 - (void)enableTracking {
     self.trackingEnabled = YES;
+
+    // Covers start, trip start and geofence resume, so the zone engages on the
+    // first update rather than the second.
+    [self refreshCurrentWifiSSID];
 
     if(self.tripInProgress) {
         self.locationManager.activityType = self.activityTypeDuringTrip;
@@ -1609,6 +1616,9 @@ const double MPH_to_METERSPERSECOND = 0.447;
         return;
     }
         
+    // Reading the SSID is async, so this batch uses the last known value.
+    [self refreshCurrentWifiSSID];
+
     // If a wifi override is configured, replace the input location list with the location in the wifi mapping
     if([GLManager currentWifiHotSpotName]) {
         CLLocation *wifiLocation = [self currentLocationFromWifiName:[GLManager currentWifiHotSpotName]];
@@ -2037,16 +2047,52 @@ const double MPH_to_METERSPERSECOND = 0.447;
     return [[[defaults dictionaryRepresentation] allKeys] containsObject:key];
 }
 
+// Cached, never nil. Refresh to update.
 + (NSString *)currentWifiHotSpotName {
-    NSString *wifiName = @"";
-    NSArray *ifs = (__bridge_transfer id)CNCopySupportedInterfaces();
-    for (NSString *ifnam in ifs) {
-        NSDictionary *info = (__bridge_transfer id)CNCopyCurrentNetworkInfo((__bridge CFStringRef)ifnam);
-        if (info[@"SSID"]) {
-            wifiName = info[@"SSID"];
+    return _currentWifiSSID ?: @"";
+}
+
+// Was CNCopyCurrentNetworkInfo: NULL for anything linked against the iOS 19 SDK
+// or newer, whatever the entitlements (CaptiveNetwork.h). Named replacement,
+// async hence the cache. Still needs wifi-info + precise location, hence the log.
+- (void)refreshCurrentWifiSSID {
+    [self refreshCurrentWifiSSIDWithCompletion:nil];
+}
+
+- (void)refreshCurrentWifiSSIDWithCompletion:(void (^)(NSString *ssid))completion {
+    // The unattended path fires per location update, so throttle it. UI callers
+    // pass a completion and always get a fresh read.
+    if(completion == nil) {
+        BOOL recentlyFetched = _lastWifiSSIDFetch != nil && [_lastWifiSSIDFetch timeIntervalSinceNow] > -5;
+        if(_wifiSSIDFetchInFlight || recentlyFetched) {
+            return;
         }
     }
-    return wifiName;
+    _wifiSSIDFetchInFlight = YES;
+    _lastWifiSSIDFetch = NSDate.date;
+
+    [NEHotspotNetwork fetchCurrentWithCompletionHandler:^(NEHotspotNetwork *currentNetwork) {
+        // Documented to arrive on the main queue.
+        _wifiSSIDFetchInFlight = NO;
+        NSString *ssid = currentNetwork.SSID ?: @"";
+        NSString *previous = _currentWifiSSID;
+        _currentWifiSSID = ssid;
+
+        // First result and every change, not every batch.
+        if(previous == nil || ![ssid isEqualToString:previous]) {
+            if(ssid.length > 0) {
+                NSLog(@"[WifiZone] now associated with Wi-Fi '%@'", ssid);
+            } else {
+                BOOL fullAccuracy = self.locationManager.accuracyAuthorization == CLAccuracyAuthorizationFullAccuracy;
+                NSLog(@"[WifiZone] no Wi-Fi SSID available (location authorization: %@, accuracy: %@). If you are on Wi-Fi, reading the SSID requires the Access WiFi Information entitlement and precise location.",
+                      self.authorizationStatusAsString, fullAccuracy ? @"full" : @"reduced");
+            }
+        }
+
+        if(completion) {
+            completion(ssid);
+        }
+    }];
 }
 
 #pragma mark - FMDB
